@@ -169,7 +169,7 @@ def get_client():
 def generate_question(domain_context: str) -> dict:
     client = get_client()
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=1000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Generate one AIP-C01 exam question for: {domain_context}. Return only JSON."}]
@@ -186,7 +186,7 @@ def generate_feedback(question_text, student_ans, correct_ans, explanation) -> d
         explanation=explanation,
     )
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=600,
         messages=[{"role": "user", "content": prompt}]
     )
