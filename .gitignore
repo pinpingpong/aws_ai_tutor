@@ -4,3 +4,4 @@ __pycache__/
 .env
 .DS_Store
 ai_tutor/
+aip_tutor.log
