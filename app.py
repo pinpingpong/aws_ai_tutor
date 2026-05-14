@@ -1,5 +1,5 @@
 import streamlit as st
-import anthropic
+import google.generativeai as genai
 import json
 import time
 from datetime import datetime
@@ -160,37 +160,30 @@ init_state()
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 def get_client():
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
-        st.error("⚠️  Add your Anthropic API key to `.streamlit/secrets.toml` as `ANTHROPIC_API_KEY = 'sk-...'`")
+        st.error("⚠️  Add your Google API key to `.streamlit/secrets.toml` as `GOOGLE_API_KEY = 'your-key-here'`")
         st.stop()
-    return anthropic.Anthropic(api_key=api_key)
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel('gemini-1.5-pro')
 
 def generate_question(domain_context: str) -> dict:
-    client = get_client()
-    resp = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Generate one AIP-C01 exam question for: {domain_context}. Return only JSON."}]
-    )
-    text = resp.content[0].text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    model = get_client()
+    prompt = f"{SYSTEM_PROMPT}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
+    response = model.generate_content(prompt)
+    text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     return json.loads(text)
 
 def generate_feedback(question_text, student_ans, correct_ans, explanation) -> dict:
-    client = get_client()
+    model = get_client()
     prompt = FEEDBACK_PROMPT.format(
         question=question_text,
         student_answer=student_ans,
         correct=correct_ans,
         explanation=explanation,
     )
-    resp = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    text = resp.content[0].text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    response = model.generate_content(prompt)
+    text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     return json.loads(text)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────

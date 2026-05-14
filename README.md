@@ -1,6 +1,6 @@
 # 🧠 AIP-C01 AWS Generative AI Developer — Practice Tutor
 
-An AI-powered exam tutor for the **AWS Certified Generative AI Developer – Professional (AIP-C01)** certification, built with Streamlit and Claude.
+An AI-powered exam tutor for the **AWS Certified Generative AI Developer – Professional (AIP-C01)** certification, built with Streamlit and Google Gemini.
 
 ---
 
@@ -8,7 +8,7 @@ An AI-powered exam tutor for the **AWS Certified Generative AI Developer – Pro
 
 - 🎯 **AI-generated exam questions** at real exam difficulty, scenario-based with 4 plausible options
 - 📚 **Domain filtering** — drill any of 8 exam domains or mix them all
-- 💬 **Personalised feedback** from Claude after each answer, including a study tip
+- 💬 **Personalised feedback** from Gemini after each answer, including a study tip
 - 📊 **Score tracking** with exam-readiness indicator (target: 85%+)
 - 📋 **Question history** so you can review what you got wrong
 
@@ -28,15 +28,15 @@ cd aip_tutor
 pip install -r requirements.txt
 ```
 
-### 3. Add your Anthropic API key
+### 3. Add your Google AI API key
 
 Edit `.streamlit/secrets.toml`:
 
 ```toml
-ANTHROPIC_API_KEY = "sk-ant-your-key-here"
+GOOGLE_API_KEY = "your-google-api-key-here"
 ```
 
-Get a key at: https://console.anthropic.com/settings/keys
+Get a key at: https://makersuite.google.com/app/apikey
 
 ### 4. Run the app
 
