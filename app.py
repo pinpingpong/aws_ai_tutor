@@ -6,16 +6,16 @@ import logging
 from datetime import datetime
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
-# Only log to file, not to console (less spam during Streamlit reruns)
+# Only log ERRORS to file
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('aip_tutor.log'),
     ]
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Only INFO and above, skip DEBUG spam
+logger.setLevel(logging.ERROR)  # Only ERROR level
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -173,16 +173,13 @@ init_state()
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 def get_client():
-    logger.info("Attempting to get Google API client...")
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
         logger.error("GOOGLE_API_KEY not found in secrets.toml")
         st.error("⚠️  Add your Google API key to `.streamlit/secrets.toml` as `GOOGLE_API_KEY = 'your-key-here'`")
         st.stop()
-    logger.info("API key found, creating client...")
     try:
         client = genai.Client(api_key=api_key)
-        logger.info("✅ Client created successfully")
         return client
     except Exception as e:
         logger.error(f"Failed to create client: {str(e)}")
@@ -190,25 +187,18 @@ def get_client():
         st.stop()
 
 def generate_question(domain_context: str) -> dict:
-    logger.info(f"Generating question for domain: {domain_context[:50]}...")
     try:
         client = get_client()
         prompt = f"{SYSTEM_PROMPT}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
-        logger.debug(f"Prompt length: {len(prompt)} characters")
         
-        logger.info("Calling Gemini API for question generation...")
         response = client.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt
         )
-        logger.info("✅ API response received")
-        logger.debug(f"Response text: {response.text[:200]}...")
         
         text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        logger.debug(f"Cleaned response: {text[:200]}...")
         
         result = json.loads(text)
-        logger.info("✅ Question generated successfully")
         return result
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error: {str(e)}")
@@ -219,7 +209,6 @@ def generate_question(domain_context: str) -> dict:
         raise
 
 def generate_feedback(question_text, student_ans, correct_ans, explanation) -> dict:
-    logger.info(f"Generating feedback for answer: {student_ans} (correct: {correct_ans})")
     try:
         client = get_client()
         prompt = FEEDBACK_PROMPT.format(
@@ -228,21 +217,15 @@ def generate_feedback(question_text, student_ans, correct_ans, explanation) -> d
             correct=correct_ans,
             explanation=explanation,
         )
-        logger.debug(f"Feedback prompt length: {len(prompt)} characters")
         
-        logger.info("Calling Gemini API for feedback generation...")
         response = client.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt
         )
-        logger.info("✅ Feedback API response received")
-        logger.debug(f"Feedback response: {response.text[:200]}...")
         
         text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        logger.debug(f"Cleaned feedback: {text[:200]}...")
         
         result = json.loads(text)
-        logger.info("✅ Feedback generated successfully")
         return result
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error in feedback: {str(e)}")
@@ -311,12 +294,10 @@ with tab_quiz:
     if generate_btn:
         with st.spinner("Generating exam-style question..."):
             try:
-                logger.info(f"User clicked generate question for domain: {domain_choice}")
                 q = generate_question(DOMAINS[domain_choice])
                 st.session_state.question = q
                 st.session_state.selected_answer = None
                 st.session_state.feedback = None
-                logger.info("Question successfully displayed to user")
             except Exception as e:
                 error_msg = f"❌ Error generating question: {type(e).__name__}: {str(e)}"
                 logger.error(error_msg)
@@ -373,7 +354,6 @@ with tab_quiz:
                                 q["explanation"]
                             )
                             st.session_state.feedback = fb
-                            logger.info("Feedback successfully generated")
                         except Exception as e:
                             error_msg = f"Error generating feedback: {type(e).__name__}: {str(e)}"
                             logger.error(error_msg, exc_info=True)
