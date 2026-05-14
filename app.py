@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+import google.genai as genai
 import json
 import time
 from datetime import datetime
@@ -164,25 +164,30 @@ def get_client():
     if not api_key:
         st.error("⚠️  Add your Google API key to `.streamlit/secrets.toml` as `GOOGLE_API_KEY = 'your-key-here'`")
         st.stop()
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-1.5-pro')
+    return genai.Client(api_key=api_key)
 
 def generate_question(domain_context: str) -> dict:
-    model = get_client()
+    client = get_client()
     prompt = f"{SYSTEM_PROMPT}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model='gemini-1.5-pro',
+        contents=prompt
+    )
     text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     return json.loads(text)
 
 def generate_feedback(question_text, student_ans, correct_ans, explanation) -> dict:
-    model = get_client()
+    client = get_client()
     prompt = FEEDBACK_PROMPT.format(
         question=question_text,
         student_answer=student_ans,
         correct=correct_ans,
         explanation=explanation,
     )
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model='gemini-1.5-pro',
+        contents=prompt
+    )
     text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     return json.loads(text)
 
