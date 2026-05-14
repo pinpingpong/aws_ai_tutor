@@ -6,15 +6,16 @@ import logging
 from datetime import datetime
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
+# Only log to file, not to console (less spam during Streamlit reruns)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('aip_tutor.log'),
-        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # Only INFO and above, skip DEBUG spam
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
