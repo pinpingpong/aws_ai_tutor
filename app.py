@@ -1,32 +1,30 @@
 import streamlit as st
-from google import genai
+import google.generativeai as genai
+try:
+    from google.api_core.exceptions import ResourceExhausted, TooManyRequests
+except ImportError:
+    ResourceExhausted = None
+    TooManyRequests = None
 import json
 import time
 import logging
 from datetime import datetime
 
-# ── Logging setup ─────────────────────────────────────────────────────
-# Only log ERRORS to file. Suppress noisy third-party logs.
-logging.basicConfig(
-    level=logging.ERROR,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('aip_tutor.log'),
-    ]
-)
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Only keep ERROR+ logs and do not write to a file.
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.ERROR)
+root_logger.handlers.clear()
 for noisy in [
-    'google',
-    'google.genai',
-    'google_genai',
-    'httpx',
-    'httpcore',
-    'urllib3',
+    "google",
+    "google.genai",
+    "google_genai",
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "streamlit",
 ]:
-    logging.getLogger(noisy).setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
-logger.propagate = False  # only app error logs
+    logging.getLogger(noisy).setLevel(logging.ERROR)
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -175,6 +173,9 @@ def init_state():
         "streak": 0,
         "generating": False,
         "tab": "quiz",
+        "error_message": None,
+        "research_context": None,
+        "research_timestamp": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -183,45 +184,91 @@ def init_state():
 init_state()
 
 # ── API helpers ───────────────────────────────────────────────────────────────
-def get_client():
+DEFAULT_MODEL = "gemini-flash-latest"
+
+def configure_genai():
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
-        logger.error("GOOGLE_API_KEY not found in secrets.toml")
         st.error("⚠️  Add your Google API key to `.streamlit/secrets.toml` as `GOOGLE_API_KEY = 'your-key-here'`")
         st.stop()
     try:
-        client = genai.Client(api_key=api_key)
-        return client
+        genai.configure(api_key=api_key)
     except Exception as e:
-        logger.error(f"Failed to create client: {str(e)}")
-        st.error(f"❌ Failed to create Google API client: {str(e)}")
+        st.error(f"❌ Failed to configure Google Generative AI client: {str(e)}")
         st.stop()
 
+import google.generativeai as genai
+
+def gather_research() -> str:
+    """Gather AWS best practices using Gemini with live Google Search grounding."""
+    try:
+        configure_genai()
+
+        # Enable the built-in Google Search grounding tool
+        search_tool = genai.protos.Tool(
+            google_search=genai.protos.GoogleSearch()
+        )
+
+        model = genai.GenerativeModel(DEFAULT_MODEL)
+
+        research_prompt = """Summarize the current best practices and key concepts for 
+        AWS Certified Generative AI Developer (AIP-C01) exam in 2025:
+
+        1. Latest AWS Bedrock features and models available
+        2. RAG architecture best practices and vector databases  
+        3. SageMaker AI for fine-tuning and deployment
+        4. GenAI governance, security, and compliance patterns
+        5. Agentic AI and multi-step workflows
+        6. Cost optimization and latency reduction strategies
+
+        Focus on real-world scenarios and exam-relevant details."""
+
+        response = model.generate_content(research_prompt)
+        return response.text
+
+    except Exception as e:
+        raise Exception(f"Research Error: {str(e)}")
+    
 def generate_question(domain_context: str) -> dict:
     try:
-        client = get_client()
-        prompt = f"{SYSTEM_PROMPT}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
+        configure_genai()
+        model = genai.GenerativeModel(DEFAULT_MODEL)
         
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
+        # Use cached research context or default
+        research = st.session_state.research_context or "(No web research loaded; using base knowledge)"
         
-        text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        formatted_prompt = SYSTEM_PROMPT.format(research_context=research)
+        prompt = f"{formatted_prompt}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
         
-        result = json.loads(text)
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {str(e)}")
-        logger.error(f"Raw response was: {response.text if 'response' in locals() else 'N/A'}")
-        raise Exception(f"Failed to parse question JSON: {str(e)}")
+        response = model.generate_content(prompt)
+        
+        # Cleaner way to extract JSON from markdown fences
+        text = response.text
+        if "```json" in text:
+            text = text.split("```json")[1].split("```" )[0].strip()
+        elif "```" in text:
+            text = text.split("```" )[1].split("```" )[0].strip()
+        else:
+            text = text.strip()
+            
+        return json.loads(text)
     except Exception as e:
-        logger.error(f"Error generating question: {type(e).__name__}: {str(e)}", exc_info=True)
-        raise
+        msg = str(e)
+        if ((ResourceExhausted is not None and isinstance(e, ResourceExhausted)) or
+            (TooManyRequests is not None and isinstance(e, TooManyRequests)) or
+            "429" in msg or "rate limit" in msg.lower() or "RESOURCE_EXHAUSTED" in msg):
+            raise Exception(
+                "Google Gemini request failed with HTTP 429 / resource exhausted. "
+                "This typically means a rate-limit or temporary request limit was reached, not necessarily that your overall quota is exhausted. "
+                "Wait a minute and retry, or reduce request frequency. "
+                f"Details: {msg}"
+            )
+        raise Exception(f"Question Generation Error: {msg}")
 
 def generate_feedback(question_text, student_ans, correct_ans, explanation) -> dict:
     try:
-        client = get_client()
+        configure_genai()
+        model = genai.GenerativeModel(DEFAULT_MODEL)
         prompt = FEEDBACK_PROMPT.format(
             question=question_text,
             student_answer=student_ans,
@@ -229,22 +276,29 @@ def generate_feedback(question_text, student_ans, correct_ans, explanation) -> d
             explanation=explanation,
         )
         
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
+        response = model.generate_content(prompt)
         
-        text = response.text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        
-        result = json.loads(text)
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error in feedback: {str(e)}")
-        logger.error(f"Raw feedback response was: {response.text if 'response' in locals() else 'N/A'}")
-        raise Exception(f"Failed to parse feedback JSON: {str(e)}")
+        text = response.text
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        else:
+            text = text.strip()
+            
+        return json.loads(text)
     except Exception as e:
-        logger.error(f"Error generating feedback: {type(e).__name__}: {str(e)}", exc_info=True)
-        raise
+        msg = str(e)
+        if ((ResourceExhausted is not None and isinstance(e, ResourceExhausted)) or
+            (TooManyRequests is not None and isinstance(e, TooManyRequests)) or
+            "429" in msg or "rate limit" in msg.lower() or "RESOURCE_EXHAUSTED" in msg):
+            raise Exception(
+                "Google Gemini request failed with HTTP 429 / resource exhausted. "
+                "This typically means a rate-limit or temporary request limit was reached, not necessarily that your overall quota is exhausted. "
+                "Wait a minute and retry, or reduce request frequency. "
+                f"Details: {msg}"
+            )
+        raise Exception(f"Feedback Generation Error: {msg}")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -253,6 +307,31 @@ with st.sidebar:
     st.divider()
 
     domain_choice = st.selectbox("📚 Select Domain", list(DOMAINS.keys()), key="domain_select")
+
+    st.divider()
+    st.markdown("### 🔍 Web Research")
+    col_research = st.columns([1, 1])
+    with col_research[0]:
+        if st.button("Search Latest AWS", use_container_width=True):
+            with st.spinner("Researching latest AWS updates..."):
+                try:
+                    research_data = gather_research()
+                    st.session_state.research_context = research_data
+                    st.session_state.research_timestamp = datetime.now().strftime("%H:%M %Y-%m-%d")
+                    st.success("✅ Research cached!")
+                except Exception as e:
+                    st.error(f"❌ Research failed: {str(e)}")
+    
+    with col_research[1]:
+        if st.button("Clear", use_container_width=True):
+            st.session_state.research_context = None
+            st.session_state.research_timestamp = None
+            st.info("Research cleared.")
+    
+    if st.session_state.research_context:
+        st.caption(f"📅 Updated: {st.session_state.research_timestamp}")
+    else:
+        st.caption("No research loaded")
 
     st.divider()
     score = st.session_state.score
@@ -278,9 +357,9 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Reset Session"):
-        for k in ["question", "selected_answer", "feedback", "score", "history", "streak"]:
-            st.session_state[k] = {"correct": 0, "total": 0} if k == "score" else ([] if k == "history" else 0 if k == "streak" else None)
-        st.rerun()
+            for k in ["question", "selected_answer", "feedback", "score", "history", "streak", "error_message"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 # ── Main content ──────────────────────────────────────────────────────────────
 st.markdown("# AWS AIP-C01 Practice Tutor")
@@ -309,14 +388,17 @@ with tab_quiz:
                 st.session_state.question = q
                 st.session_state.selected_answer = None
                 st.session_state.feedback = None
+                st.session_state.error_message = None
             except Exception as e:
-                error_msg = f"❌ Error generating question: {type(e).__name__}: {str(e)}"
-                logger.error(error_msg)
-                st.error(error_msg)
-                st.info("📝 Check the logs below or the `aip_tutor.log` file for details")
-                with st.expander("🔍 Technical Details"):
-                    st.code(str(e), language="text")
-        st.rerun()
+                st.session_state.error_message = f"❌ Error generating question: {type(e).__name__}: {str(e)}"
+                st.session_state.question = None
+                st.session_state.selected_answer = None
+                st.session_state.feedback = None
+
+    if st.session_state.error_message:
+        st.error(st.session_state.error_message)
+        with st.expander("🔍 Technical Details"):
+            st.code(st.session_state.error_message, language="text")
 
     q = st.session_state.question
     if q:
@@ -338,7 +420,7 @@ with tab_quiz:
                 key="answer_radio",
                 index=None,
             )
-            if st.button("✅ Submit Answer", use_container_width=True):
+            if st.button("✅ Submit Answer", use_container_width=True, key="submit_answer_btn"):
                 if choice is None:
                     st.warning("Please select an answer first.")
                 else:
@@ -355,25 +437,11 @@ with tab_quiz:
                         "is_correct": is_correct,
                         "timestamp": datetime.now().strftime("%H:%M"),
                     })
-                    with st.spinner("Analysing your answer..."):
-                        try:
-                            logger.info(f"Generating feedback for user's answer: {choice}")
-                            fb = generate_feedback(
-                                q["question"],
-                                f"{choice}: {q['options'][choice]}",
-                                f"{q['correct']}: {q['options'][q['correct']]}",
-                                q["explanation"]
-                            )
-                            st.session_state.feedback = fb
-                        except Exception as e:
-                            error_msg = f"Error generating feedback: {type(e).__name__}: {str(e)}"
-                            logger.error(error_msg, exc_info=True)
-                            st.warning(f"⚠️ {error_msg}")
-                            st.session_state.feedback = {
-                                "verdict": "correct" if is_correct else "incorrect",
-                                "message": q["explanation"],
-                                "tip": "Review the relevant AWS Bedrock documentation for this topic."
-                            }
+                    st.session_state.feedback = {
+                        "verdict": "correct" if is_correct else "incorrect",
+                        "message": q["explanation"],
+                        "tip": "Review the explanation above and revisit the AWS service tradeoffs mentioned in the scenario."
+                    }
                     st.rerun()
         else:
             # Show answered options with colour coding
