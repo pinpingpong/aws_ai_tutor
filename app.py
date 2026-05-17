@@ -6,9 +6,11 @@ except ImportError:
     ResourceExhausted = None
     TooManyRequests = None
 import json
-import time
 import logging
 from datetime import datetime
+import urllib.request
+import urllib.parse
+import os
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 # Only keep ERROR+ logs and do not write to a file.
@@ -129,22 +131,25 @@ Key exam facts:
 - Anti-patterns matter — often 2+ answers look correct; tiny AWS-specific details decide the winner
 - Real exam takers say it is one of AWS's hardest exams
 
+Latest AWS context (use this to make questions current and accurate):
+{research_context}
+
 Generate ONE realistic exam-style question for the specified domain.
 
 RESPOND ONLY WITH THIS EXACT JSON (no markdown fences, no preamble):
-{
+{{
   "question": "Scenario-based question (3-5 sentences with real constraints like data residency, cost, latency, security)",
-  "options": {
+  "options": {{
     "A": "Option A text",
     "B": "Option B text",
     "C": "Option C text",
     "D": "Option D text"
-  },
+  }},
   "correct": "A",
   "explanation": "2-3 sentences: why the correct answer wins, and why the distractors fail. Reference specific AWS services and AIP-C01 concepts.",
   "domain": "Short domain label",
   "difficulty": "Medium or Hard"
-}
+}}
 
 Make questions genuinely hard with plausible wrong answers. Use real AWS service names."""
 
@@ -162,6 +167,47 @@ Respond ONLY with this JSON (no markdown):
   "tip": "One concrete study tip related to this topic (e.g. 'In Bedrock, ask yourself: is this a retrieval problem (RAG/Knowledge Bases) or a behaviour problem (fine-tuning)?')"
 }}"""
 
+# ── Research cache file management ──────────────────────────────────────────
+CACHE_FILE = "research_cache.json"
+
+def save_research_cache():
+    """Save current research to local JSON file."""
+    try:
+        cache_data = {
+            "research_context": st.session_state.research_context,
+            "research_timestamp": st.session_state.research_timestamp,
+            "saved_at": datetime.now().isoformat(),
+        }
+        with open(CACHE_FILE, "w") as f:
+            json.dump(cache_data, f, indent=2)
+        return True
+    except Exception as e:
+        raise Exception(f"Failed to save research cache: {str(e)}")
+
+def load_research_cache():
+    """Load research from cache file if it exists."""
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, "r") as f:
+                cache_data = json.load(f)
+                return {
+                    "research_context": cache_data.get("research_context"),
+                    "research_timestamp": cache_data.get("research_timestamp"),
+                    "saved_at": cache_data.get("saved_at"),
+                }
+        return None
+    except Exception as e:
+        raise Exception(f"Failed to load research cache: {str(e)}")
+
+def clear_research_cache():
+    """Delete the cache file."""
+    try:
+        if os.path.exists(CACHE_FILE):
+            os.remove(CACHE_FILE)
+        return True
+    except Exception as e:
+        raise Exception(f"Failed to clear research cache: {str(e)}")
+
 # ── Session state init ────────────────────────────────────────────────────────
 def init_state():
     defaults = {
@@ -176,10 +222,22 @@ def init_state():
         "error_message": None,
         "research_context": None,
         "research_timestamp": None,
+        "research_last_called": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    
+    # 🌟 AUTOMATIC BACKGROUND LOAD FOR OPTION B 🌟
+    # If the session state is fresh (None), instantly force-load your GitHub asset file
+    if st.session_state.research_context is None:
+        try:
+            cache = load_research_cache()
+            if cache and cache["research_context"]:
+                st.session_state.research_context = cache["research_context"]
+                st.session_state.research_timestamp = cache["research_timestamp"]
+        except Exception:
+            pass  # Fail silently if there's a temporary structural file read lag
 
 init_state()
 
@@ -197,38 +255,84 @@ def configure_genai():
         st.error(f"❌ Failed to configure Google Generative AI client: {str(e)}")
         st.stop()
 
-import google.generativeai as genai
+RESEARCH_COOLDOWN_SECONDS = 60
 
 def gather_research() -> str:
-    """Gather AWS best practices using Gemini with live Google Search grounding."""
+    """Scrapes forums, Reddit threads, and tech blogs using Jina AI's Search API."""
+
+    # 1. Cooldown guard
+    last_called = st.session_state.get("research_last_called")
+    if last_called is not None:
+        elapsed = (datetime.now() - last_called).total_seconds()
+        if elapsed < RESEARCH_COOLDOWN_SECONDS:
+            remaining = int(RESEARCH_COOLDOWN_SECONDS - elapsed)
+            raise Exception(f"Please wait {remaining}s before updating community insights.")
+
+    # 2. Return cached data if already fetched
+    if st.session_state.get("research_context"):
+        return st.session_state.research_context
+
+    # Ensure your Jina key is configured
+    jina_key = st.secrets.get("JINA_API_KEY", "")
+    if not jina_key:
+        raise Exception("Missing JINA_API_KEY in your local Streamlit secrets file.")
+
     try:
+        # Step 1: Shape the query to target real-world human discussions, complaints, and tips
+        raw_query = "AWS Certified Generative AI Developer Professional AIP-C01 exam experience reddit forum blog"
+        encoded_query = urllib.parse.quote(raw_query)
+        url = f"https://s.jina.ai/{encoded_query}"
+        
+        # Build the network request passing the required Bearer Token header
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {jina_key}") # Clears the 401 block!
+        req.add_header("Accept", "text/plain")
+        req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        
+        # Fetch the compiled forum and blog texts converted into clean markdown
+        with urllib.request.urlopen(req, timeout=18) as response:
+            web_raw_markdown = response.read().decode('utf-8').strip()
+
+        if not web_raw_markdown or "Rate limit" in web_raw_markdown:
+            raise Exception("Search index is currently rate-limited. Try again in a moment.")
+
+        # Step 2: Use your standard free Gemini setup to analyze the human sentiment
         configure_genai()
+        model = genai.GenerativeModel(model_name=DEFAULT_MODEL)
+        
+        sentiment_prompt = f"""
+        You are a technical analyst evaluating student feedback. Review this scraped web data 
+        containing blog posts, forum replies, and user experiences for the AWS AIP-C01 exam.
+        
+        Extract and summarize:
+        1. What specific services or concepts did candidates find unexpectedly difficult or tricky?
+        2. What core technical details are people saying you MUST memorize (e.g., specific Bedrock parameters, prompt styles)?
+        3. Any practical tips regarding time management or question structure mentioned by real test-takers.
+        
+        Scraped Human Feedback:
+        {web_raw_markdown}
+        """
+        
+        response = model.generate_content(sentiment_prompt)
+        compiled_context = response.text.strip()
 
-        # Enable the built-in Google Search grounding tool
-        search_tool = genai.protos.Tool(
-            google_search=genai.protos.GoogleSearch()
-        )
+        if not compiled_context:
+            raise Exception("Gemini returned an empty summary of the scraped data.")
 
-        model = genai.GenerativeModel(DEFAULT_MODEL)
+        # Cache the results in Streamlit session state
+        st.session_state.research_context = compiled_context
+        st.session_state.research_last_called = datetime.now()
+        
+        return compiled_context
 
-        research_prompt = """Summarize the current best practices and key concepts for 
-        AWS Certified Generative AI Developer (AIP-C01) exam in 2025:
-
-        1. Latest AWS Bedrock features and models available
-        2. RAG architecture best practices and vector databases  
-        3. SageMaker AI for fine-tuning and deployment
-        4. GenAI governance, security, and compliance patterns
-        5. Agentic AI and multi-step workflows
-        6. Cost optimization and latency reduction strategies
-
-        Focus on real-world scenarios and exam-relevant details."""
-
-        response = model.generate_content(research_prompt)
-        return response.text
-
+    except urllib.error.HTTPError as http_err:
+        if http_err.code == 403:
+            raise Exception("Jina AI Error 403: Insufficient account token balance.")
+        else:
+            raise Exception(f"Jina API Network Error ({http_err.code}): {http_err.reason}")
     except Exception as e:
-        raise Exception(f"Research Error: {str(e)}")
-    
+        raise Exception(f"Community Research Failure: {str(e)}")
+
 def generate_question(domain_context: str) -> dict:
     try:
         configure_genai()
@@ -310,9 +414,24 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 🔍 Web Research")
+
+    # Compute cooldown state for display
+    last_called = st.session_state.get("research_last_called")
+    cooldown_active = False
+    cooldown_remaining = 0
+    if last_called is not None:
+        elapsed = (datetime.now() - last_called).total_seconds()
+        if elapsed < RESEARCH_COOLDOWN_SECONDS:
+            cooldown_active = True
+            cooldown_remaining = int(RESEARCH_COOLDOWN_SECONDS - elapsed)
+
+    already_cached = bool(st.session_state.research_context)
+
     col_research = st.columns([1, 1])
     with col_research[0]:
-        if st.button("Search Latest AWS", use_container_width=True):
+        btn_label = "✅ Cached" if already_cached else ("⏳ Cooldown" if cooldown_active else "Search Latest AWS")
+        btn_disabled = already_cached or cooldown_active
+        if st.button(btn_label, use_container_width=True, disabled=btn_disabled):
             with st.spinner("Researching latest AWS updates..."):
                 try:
                     research_data = gather_research()
@@ -321,17 +440,46 @@ with st.sidebar:
                     st.success("✅ Research cached!")
                 except Exception as e:
                     st.error(f"❌ Research failed: {str(e)}")
-    
+
     with col_research[1]:
         if st.button("Clear", use_container_width=True):
             st.session_state.research_context = None
             st.session_state.research_timestamp = None
+            try:
+                clear_research_cache()
+            except Exception:
+                pass
             st.info("Research cleared.")
-    
-    if st.session_state.research_context:
+
+    # Save and load cache buttons
+    if already_cached:
+        col_cache = st.columns([1, 1])
+        with col_cache[0]:
+            if st.button("💾 Save", use_container_width=True):
+                try:
+                    save_research_cache()
+                    st.success("✅ Saved to cache!")
+                except Exception as e:
+                    st.error(f"❌ Save failed: {str(e)}")
+        with col_cache[1]:
+            cache_exists = os.path.exists(CACHE_FILE)
+            if st.button("📂 Load Cache" if cache_exists else "No Cache", use_container_width=True, disabled=not cache_exists):
+                try:
+                    cache = load_research_cache()
+                    if cache and cache["research_context"]:
+                        st.session_state.research_context = cache["research_context"]
+                        st.session_state.research_timestamp = cache["research_timestamp"]
+                        st.success("✅ Loaded from cache!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Load failed: {str(e)}")
+
+    if already_cached:
         st.caption(f"📅 Updated: {st.session_state.research_timestamp}")
+    elif cooldown_active:
+        st.caption(f"⏳ Next search available in {cooldown_remaining}s")
     else:
-        st.caption("No research loaded")
+        st.caption("No research loaded — questions still work without it")
 
     st.divider()
     score = st.session_state.score
