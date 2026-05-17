@@ -5,8 +5,8 @@ import time
 import logging
 from datetime import datetime
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-# Only log ERRORS to file
+# ── Logging setup ─────────────────────────────────────────────────────
+# Only log ERRORS to file. Suppress noisy third-party logs.
 logging.basicConfig(
     level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -14,8 +14,19 @@ logging.basicConfig(
         logging.FileHandler('aip_tutor.log'),
     ]
 )
+for noisy in [
+    'google',
+    'google.genai',
+    'google_genai',
+    'httpx',
+    'httpcore',
+    'urllib3',
+]:
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)  # Only ERROR level
+logger.setLevel(logging.ERROR)
+logger.propagate = False  # only app error logs
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
