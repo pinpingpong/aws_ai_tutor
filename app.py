@@ -243,6 +243,21 @@ init_state()
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 DEFAULT_MODEL = "gemini-flash-latest"
+FALLBACK_MODEL = "gemini-flash-lite-latest"   # used when the primary is slow or overloaded
+PRIMARY_TIMEOUT_SECONDS = 30
+
+def generate_text(prompt: str):
+    """Try the primary model with a timeout, then fall back to the lite model.
+    Once the primary fails, the session sticks to the fallback so users wait only once."""
+    if not st.session_state.get("use_fallback_model"):
+        try:
+            return genai.GenerativeModel(DEFAULT_MODEL).generate_content(
+                prompt, request_options={"timeout": PRIMARY_TIMEOUT_SECONDS})
+        except Exception as e:
+            root_logger.error(f"Primary model {DEFAULT_MODEL} failed, falling back to {FALLBACK_MODEL}: {type(e).__name__}")
+            st.session_state.use_fallback_model = True
+    return genai.GenerativeModel(FALLBACK_MODEL).generate_content(
+        prompt, request_options={"timeout": 60})
 
 def configure_genai():
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
@@ -256,6 +271,8 @@ def configure_genai():
         st.stop()
 
 RESEARCH_COOLDOWN_SECONDS = 60
+JINA_TIMEOUT_SECONDS = 60      # s.jina.ai fetches each result page; often takes 30s+
+MAX_RESEARCH_CHARS = 30000     # cap scraped text sent to Gemini (~7-8k tokens)
 
 def gather_research() -> str:
     """Scrapes forums, Reddit threads, and tech blogs using Jina AI's Search API."""
@@ -290,15 +307,15 @@ def gather_research() -> str:
         req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         
         # Fetch the compiled forum and blog texts converted into clean markdown
-        with urllib.request.urlopen(req, timeout=18) as response:
+        with urllib.request.urlopen(req, timeout=JINA_TIMEOUT_SECONDS) as response:
             web_raw_markdown = response.read().decode('utf-8').strip()
+        web_raw_markdown = web_raw_markdown[:MAX_RESEARCH_CHARS]
 
         if not web_raw_markdown or "Rate limit" in web_raw_markdown:
             raise Exception("Search index is currently rate-limited. Try again in a moment.")
 
         # Step 2: Use your standard free Gemini setup to analyze the human sentiment
         configure_genai()
-        model = genai.GenerativeModel(model_name=DEFAULT_MODEL)
         
         sentiment_prompt = f"""
         You are a technical analyst evaluating student feedback. Review this scraped web data 
@@ -313,7 +330,7 @@ def gather_research() -> str:
         {web_raw_markdown}
         """
         
-        response = model.generate_content(sentiment_prompt)
+        response = generate_text(sentiment_prompt)
         compiled_context = response.text.strip()
 
         if not compiled_context:
@@ -336,7 +353,6 @@ def gather_research() -> str:
 def generate_question(domain_context: str) -> dict:
     try:
         configure_genai()
-        model = genai.GenerativeModel(DEFAULT_MODEL)
         
         # Use cached research context or default
         research = st.session_state.research_context or "(No web research loaded; using base knowledge)"
@@ -344,7 +360,7 @@ def generate_question(domain_context: str) -> dict:
         formatted_prompt = SYSTEM_PROMPT.format(research_context=research)
         prompt = f"{formatted_prompt}\n\nGenerate one AIP-C01 exam question for: {domain_context}. Return only JSON."
         
-        response = model.generate_content(prompt)
+        response = generate_text(prompt)
         
         # Cleaner way to extract JSON from markdown fences
         text = response.text
@@ -372,7 +388,6 @@ def generate_question(domain_context: str) -> dict:
 def generate_feedback(question_text, student_ans, correct_ans, explanation) -> dict:
     try:
         configure_genai()
-        model = genai.GenerativeModel(DEFAULT_MODEL)
         prompt = FEEDBACK_PROMPT.format(
             question=question_text,
             student_answer=student_ans,
@@ -380,7 +395,7 @@ def generate_feedback(question_text, student_ans, correct_ans, explanation) -> d
             explanation=explanation,
         )
         
-        response = model.generate_content(prompt)
+        response = generate_text(prompt)
         
         text = response.text
         if "```json" in text:
